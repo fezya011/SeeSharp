@@ -1,0 +1,320 @@
+﻿@page "/vision"
+@rendermode InteractiveServer
+@using SeeSharp.Services
+@using SeeSharp.Models
+@inject FaceDetectionService VisionService
+@implements IAsyncDisposable
+
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <h1 class="text-center mb-4">Компьютерное зрение Pro</h1>
+            <p class="text-center text-muted">Детекция лиц, эмоций, тела в реальном времени</p>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">Live детекция</h4>
+                </div>
+                <div class="card-body">
+                    <div style="position: relative;">
+                        <video id="video" width="100%" autoplay style="border-radius: 8px; background: #000;"></video>
+                        <canvas id="overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="d-flex gap-2 justify-content-between align-items-center">
+                            <div>
+                                <button class="btn btn-danger" @onclick="ToggleDetection">
+                                    @if (isDetecting)
+                                    {
+                                        <span>Остановить</span>
+                                    }
+                                    else
+                                    {
+                                        <span>Запустить детекцию</span>
+                                    }
+                                </button>
+
+                                <button class="btn btn-secondary ms-2" @onclick="CapturePhoto">
+                                    Фото
+                                </button>
+                            </div>
+
+                            <div>
+                                <span class="badge bg-success">Лиц: @faceCount</span>
+                                <span class="badge bg-info ms-1">@fps FPS</span>
+                                <span class="badge bg-warning ms-1">@processingTimeMs мс</span>
+                                @if (fullBodiesCount > 0)
+                                {
+                                    <span class="badge bg-primary ms-1">Тела: @fullBodiesCount</span>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card shadow-sm">
+                <div class="card-header bg-success text-white">
+                    <h4 class="mb-0">Детальная информация</h4>
+                </div>
+                <div class="card-body">
+                    @if (lastResultImage != null)
+                    {
+                        <img src="@lastResultImage" class="img-fluid rounded mb-2" style="max-height: 200px; width: 100%; object-fit: cover;" />
+
+                        <div class="alert alert-info mb-2">
+                            <strong>Лицо:</strong><br />
+                            @if (lastFaceExpression != null)
+                            {
+                                <span>Выражение: @lastFaceExpression</span><br />
+                            }
+                            <span>Глаз: @lastEyesCount</span><br />
+                            <span>Нос: @lastNoseCount</span><br />
+                            <span>Рот: @lastMouthCount</span><br />
+                            <span>Уверенность: @lastConfidence%</span>
+                        </div>
+
+                        @if (fullBodiesCount > 0)
+                        {
+                            <div class="alert alert-secondary mb-2">
+                                <strong>Тело:</strong><br />
+                                <span>Полных тел: @fullBodiesCount</span><br />
+                                <span>Верхних частей: @upperBodiesCount</span>
+                            </div>
+                        }
+
+                        @if (lastFaceSmile)
+                        {
+                            <div class="alert alert-warning mb-0">
+                                <strong>Улыбка обнаружена!</strong>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="alert alert-secondary">
+                            Нажмите "Запустить детекцию"
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gap-2 {
+        gap: 0.5rem;
+    }
+
+    .btn {
+        min-width: 120px;
+    }
+
+    .badge {
+        font-size: 0.85rem;
+        padding: 0.35rem 0.65rem;
+    }
+</style>
+
+@code {
+    private string? lastResultImage;
+    private int faceCount = 0;
+    private int lastFaceCount = 0;
+    private int lastEyesCount = 0;
+    private int lastNoseCount = 0;
+    private int lastMouthCount = 0;
+    private int lastConfidence = 0;
+    private string? lastFaceExpression;
+    private bool lastFaceSmile = false;
+    private int fullBodiesCount = 0;
+    private int upperBodiesCount = 0;
+
+    private bool isDetecting = false;
+    private bool isCameraReady = false;
+    private long processingTimeMs = 0;
+    private int fps = 0;
+
+    private DateTime lastProcessTime = DateTime.Now;
+    private int processDelayMs = 150;
+    private int frameCount = 0;
+    private DateTime lastFpsTime = DateTime.Now;
+    private DotNetObjectReference<FaceDetection>? dotNetRef;
+    private bool _jsInitialized = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _jsInitialized = true;
+            dotNetRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("setDotNetReference", dotNetRef);
+            await InitializeCamera();
+        }
+    }
+
+    private async Task InitializeCamera()
+    {
+        try
+        {
+            if (_jsInitialized)
+            {
+                isCameraReady = await JS.InvokeAsync<bool>("startCamera");
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Camera error: {ex.Message}");
+        }
+    }
+
+    [JSInvokable]
+    public async Task DetectFrame(string imageBase64)
+    {
+        if (!isDetecting) return;
+
+        var now = DateTime.Now;
+        if ((now - lastProcessTime).TotalMilliseconds < processDelayMs)
+            return;
+        lastProcessTime = now;
+
+        frameCount++;
+        if ((now - lastFpsTime).TotalSeconds >= 1)
+        {
+            fps = frameCount;
+            frameCount = 0;
+            lastFpsTime = now;
+            await InvokeAsync(StateHasChanged);
+        }
+
+        try
+        {
+            var base64Data = imageBase64.Split(',')[1];
+            var imageData = Convert.FromBase64String(base64Data);
+
+            var result = await VisionService.DetectFullAsync(imageData);
+
+            fullBodiesCount = result.FullBodies.Count;
+            upperBodiesCount = result.UpperBodies.Count;
+
+            if (result.Success && result.ProcessedImage != null)
+            {
+                faceCount = result.FacesCount;
+                processingTimeMs = result.ProcessingTime;
+
+                if (result.FacesCount > 0)
+                {
+                    var firstFace = result.Faces.First();
+                    lastFaceCount = result.FacesCount;
+                    lastEyesCount = result.Faces.Sum(f => f.Eyes.Count);
+                    lastNoseCount = result.Faces.Sum(f => f.Nose.Count);
+                    lastMouthCount = result.Faces.Sum(f => f.Mouth.Count);
+                    lastConfidence = firstFace.Confidence;
+                    lastFaceExpression = firstFace.GetExpression();
+                    lastFaceSmile = firstFace.IsSmiling;
+                    lastResultImage = $"data:image/jpeg;base64,{Convert.ToBase64String(result.ProcessedImage)}";
+                }
+
+                await DrawOnCanvas(lastResultImage);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Detection error: {ex.Message}");
+        }
+    }
+
+    private async Task DrawOnCanvas(string imageUrl)
+    {
+        if (_jsInitialized)
+        {
+            await JS.InvokeVoidAsync("drawOnCanvas", imageUrl);
+        }
+    }
+
+    private async Task ToggleDetection()
+    {
+        if (!_jsInitialized) return;
+
+        if (isDetecting)
+        {
+            await JS.InvokeVoidAsync("stopRealTimeDetection");
+            isDetecting = false;
+            await JS.InvokeVoidAsync("clearCanvas");
+        }
+        else
+        {
+            isDetecting = true;
+            await JS.InvokeVoidAsync("startRealTimeDetection");
+        }
+        StateHasChanged();
+    }
+
+    private async Task CapturePhoto()
+    {
+        if (!_jsInitialized) return;
+
+        try
+        {
+            var imageBase64 = await JS.InvokeAsync<string>("capturePhoto");
+            if (!string.IsNullOrEmpty(imageBase64))
+            {
+                var base64Data = imageBase64.Split(',')[1];
+                var imageData = Convert.FromBase64String(base64Data);
+                var result = await VisionService.DetectFullAsync(imageData);
+
+                if (result.Success && result.ProcessedImage != null)
+                {
+                    lastResultImage = $"data:image/jpeg;base64,{Convert.ToBase64String(result.ProcessedImage)}";
+                    lastFaceCount = result.FacesCount;
+                    lastEyesCount = result.Faces.Sum(f => f.Eyes.Count);
+                    lastNoseCount = result.Faces.Sum(f => f.Nose.Count);
+                    lastMouthCount = result.Faces.Sum(f => f.Mouth.Count);
+                    fullBodiesCount = result.FullBodies.Count;
+                    upperBodiesCount = result.UpperBodies.Count;
+                    StateHasChanged();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Photo error: {ex.Message}");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            isDetecting = false;
+            dotNetRef?.Dispose();
+
+            if (_jsInitialized)
+            {
+                try
+                {
+                    await JS.InvokeVoidAsync("stopCamera");
+                }
+                catch (InvalidOperationException)
+                {
+                    Console.WriteLine("JS interop not available during dispose");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Dispose error: {ex.Message}");
+        }
+    }
+
+    [Inject] protected IJSRuntime JS { get; set; }
+}

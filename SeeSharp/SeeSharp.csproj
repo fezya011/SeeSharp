@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Emgu.CV" Version="4.13.0.5924" />
+    <PackageReference Include="Emgu.CV.Bitmap" Version="4.13.0.5924" />
+    <PackageReference Include="Emgu.CV.runtime.windows" Version="4.13.0.5924" />
+    <PackageReference Include="Mediapipe.Net" Version="0.9.2" />
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260526" />
+    <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260526" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
+  </ItemGroup>
+
+</Project>
